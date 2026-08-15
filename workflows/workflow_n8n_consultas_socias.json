@@ -1,0 +1,410 @@
+{
+  "name": "Consultas socias · triage IA con memoria y HITL",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "consulta-socio",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "n01",
+      "name": "Trigger · Webhook formulario",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "consulta-socio"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "a1", "name": "nombre", "value": "={{ ($json.body.nombre || '').trim() }}", "type": "string" },
+            { "id": "a2", "name": "empresa", "value": "={{ ($json.body.empresa || '').trim() }}", "type": "string" },
+            { "id": "a3", "name": "email", "value": "={{ ($json.body.email || '').trim().toLowerCase() }}", "type": "string" },
+            { "id": "a4", "name": "consulta", "value": "={{ ($json.body.consulta || '').trim() }}", "type": "string" },
+            { "id": "a5", "name": "origen", "value": "={{ $json.body.origen || 'formulario' }}", "type": "string" },
+            { "id": "a6", "name": "recibido_en", "value": "={{ $now.toISO() }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "n02",
+      "name": "Normalizar campos",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "id": "c1", "leftValue": "={{ $json.email }}", "rightValue": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", "operator": { "type": "string", "operation": "regex" } },
+            { "id": "c2", "leftValue": "={{ $json.consulta.length }}", "rightValue": 15, "operator": { "type": "number", "operation": "gte" } },
+            { "id": "c3", "leftValue": "={{ $json.origen }}", "rightValue": "formulario", "operator": { "type": "string", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n03",
+      "name": "¿Datos completos y origen válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": false, \"error\": \"Faltan datos obligatorios (email válido y consulta de al menos 15 caracteres)\" } }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "n04",
+      "name": "Responder 400 · datos incompletos",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [660, 520]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": { "__rl": true, "mode": "id", "value": "={{ $env.AIRTABLE_BASE_ID }}" },
+        "table": { "__rl": true, "mode": "name", "value": "Ejecuciones" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "fecha": "={{ $now.toISO() }}",
+            "nodo": "Validación de entrada",
+            "resultado": "camino_infeliz",
+            "detalle": "Datos incompletos o inválidos en el formulario",
+            "workflow": "={{ $workflow.name }}",
+            "execution_id": "={{ $execution.id }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "n05",
+      "name": "Registrar camino infeliz",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [880, 520]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": { "__rl": true, "mode": "id", "value": "={{ $env.AIRTABLE_BASE_ID }}" },
+        "table": { "__rl": true, "mode": "name", "value": "Empresas" },
+        "filterByFormula": "={email} = '{{ $json.email }}'",
+        "returnAll": false,
+        "limit": 1,
+        "options": {}
+      },
+      "id": "n06",
+      "name": "Buscar empresa (memoria)",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [660, 200],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": { "__rl": true, "mode": "id", "value": "={{ $env.AIRTABLE_BASE_ID }}" },
+        "table": { "__rl": true, "mode": "name", "value": "Consultas" },
+        "filterByFormula": "=AND({email_empresa} = '{{ $('Normalizar campos').item.json.email }}', {estado} = 'Aprobado y Enviado')",
+        "returnAll": false,
+        "limit": 3,
+        "options": { "sort": { "property": [ { "field": "creado", "direction": "desc" } ] } }
+      },
+      "id": "n07",
+      "name": "Buscar consultas previas",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [880, 200],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const entrada = $('Normalizar campos').first().json;\nconst empresa = $('Buscar empresa (memoria)').first().json;\nconst previas = $('Buscar consultas previas').all().map(i => i.json).filter(j => j && j.consulta);\nconst historial = previas.map(p => `- (${(p.creado||'').slice(0,10)}) Tema ${p.tema||'s/d'}: ${(p.consulta||'').slice(0,160)}`).join('\\n');\nreturn [{ json: {\n  ...entrada,\n  empresa_record_id: empresa && empresa.id ? empresa.id : null,\n  empresa_rubro: empresa && empresa.rubro ? empresa.rubro : 's/d',\n  empresa_conocida: !!(empresa && empresa.id),\n  historial_texto: historial || 'Sin consultas previas registradas.',\n  cantidad_previas: previas.length\n} }];"
+      },
+      "id": "n08",
+      "name": "Armar contexto de memoria",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 200]
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "mode": "list", "value": "gpt-4.1-nano" },
+        "messages": {
+          "values": [
+            { "role": "system", "content": "Sos un clasificador de consultas de empresas socias de una cámara empresaria. Respondé ÚNICAMENTE un JSON válido con esta forma exacta: {\"tema\": \"capacitacion|digitalizacion|tramites|beneficios|otro\", \"urgencia\": \"alta|media|baja\", \"resumen\": \"máximo 20 palabras\"}. Sin texto adicional." },
+            { "role": "user", "content": "=Empresa: {{ $json.empresa }} (rubro {{ $json.empresa_rubro }}). Consulta: {{ $json.consulta }}" }
+          ]
+        },
+        "jsonOutput": true,
+        "options": { "maxTokens": 60, "temperature": 0 }
+      },
+      "id": "n09",
+      "name": "IA · Clasificar consulta (gpt-4.1-nano)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [1320, 200],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "model": "claude-haiku-4-5-20251001",
+        "messages": {
+          "values": [
+            { "role": "user", "content": "=Sos asesor de una cámara empresaria y redactás una respuesta breve, cordial y concreta en español rioplatense (voseo) para una empresa socia. No inventes datos ni prometas plazos; si algo requiere confirmación, decilo. Máximo 150 palabras. Cerrá con firma 'Equipo de Atención a Socios'.\n\nEmpresa: {{ $('Armar contexto de memoria').item.json.empresa }} (rubro {{ $('Armar contexto de memoria').item.json.empresa_rubro }}).\nEmpresa ya conocida: {{ $('Armar contexto de memoria').item.json.empresa_conocida }}.\nHistorial de consultas previas respondidas:\n{{ $('Armar contexto de memoria').item.json.historial_texto }}\n\nClasificación de la consulta actual: tema {{ $json.message.content.tema }}, urgencia {{ $json.message.content.urgencia }}.\nConsulta actual: {{ $('Armar contexto de memoria').item.json.consulta }}\n\nRedactá solo el cuerpo del email, sin asunto." }
+          ]
+        },
+        "options": { "maxTokens": 400, "temperature": 0.3 }
+      },
+      "id": "n10",
+      "name": "IA · Redactar respuesta (Claude Haiku 4.5)",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [1540, 200],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": { "__rl": true, "mode": "id", "value": "={{ $env.AIRTABLE_BASE_ID }}" },
+        "table": { "__rl": true, "mode": "name", "value": "Consultas" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "consulta": "={{ $('Armar contexto de memoria').item.json.consulta }}",
+            "email_empresa": "={{ $('Armar contexto de memoria').item.json.email }}",
+            "nombre_contacto": "={{ $('Armar contexto de memoria').item.json.nombre }}",
+            "empresa": "={{ $('Armar contexto de memoria').item.json.empresa_record_id ? [$('Armar contexto de memoria').item.json.empresa_record_id] : [] }}",
+            "tema": "={{ $('IA · Clasificar consulta (gpt-4.1-nano)').item.json.message.content.tema }}",
+            "urgencia": "={{ $('IA · Clasificar consulta (gpt-4.1-nano)').item.json.message.content.urgencia }}",
+            "resumen_ia": "={{ $('IA · Clasificar consulta (gpt-4.1-nano)').item.json.message.content.resumen }}",
+            "borrador_ia": "={{ $json.content[0].text }}",
+            "estado": "Procesado por IA",
+            "modelo_clasificacion": "gpt-4.1-nano",
+            "modelo_redaccion": "claude-haiku-4-5",
+            "execution_id": "={{ $execution.id }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "n11",
+      "name": "Guardar consulta · Procesado por IA",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1760, 200]
+    },
+    {
+      "parameters": {
+        "operation": "sendAndWait",
+        "select": "channel",
+        "channelId": { "__rl": true, "mode": "name", "value": "#aprobaciones-socios" },
+        "message": "=*Nueva consulta para aprobar* (urgencia {{ $json.fields.urgencia }}, tema {{ $json.fields.tema }})\n*Empresa:* {{ $('Armar contexto de memoria').item.json.empresa }}\n*Consulta:* {{ $('Armar contexto de memoria').item.json.consulta }}\n\n*Borrador propuesto por la IA:*\n{{ $json.fields.borrador_ia }}\n\n_Registro Airtable: {{ $json.id }}_",
+        "responseType": "approval",
+        "approvalOptions": { "values": { "approvalType": "double", "approveLabel": "Aprobar y enviar", "disapproveLabel": "Rechazar" } },
+        "options": { "limitWaitTime": { "values": { "limitType": "afterTimeInterval", "resumeAmount": 24, "resumeUnit": "hours" } } }
+      },
+      "id": "n12",
+      "name": "HITL · Slack: aprobar borrador",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [1980, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [ { "id": "ap1", "leftValue": "={{ $json.data.approved }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } } ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n13",
+      "name": "¿Aprobado por humano?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2200, 200]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Armar contexto de memoria').item.json.email }}",
+        "subject": "=Re: tu consulta a la Cámara · {{ $('IA · Clasificar consulta (gpt-4.1-nano)').item.json.message.content.tema }}",
+        "emailType": "text",
+        "message": "={{ $('Guardar consulta · Procesado por IA').item.json.fields.borrador_ia }}",
+        "options": { "threadId": "={{ $('Armar contexto de memoria').item.json.thread_id || '' }}" }
+      },
+      "id": "n14",
+      "name": "Gmail · Enviar respuesta al socio",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2420, 100],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": { "__rl": true, "mode": "id", "value": "={{ $env.AIRTABLE_BASE_ID }}" },
+        "table": { "__rl": true, "mode": "name", "value": "Consultas" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": ["id"],
+          "value": {
+            "id": "={{ $('Guardar consulta · Procesado por IA').item.json.id }}",
+            "estado": "Aprobado y Enviado",
+            "gmail_thread_id": "={{ $json.threadId }}",
+            "enviado_en": "={{ $now.toISO() }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "n15",
+      "name": "Airtable · Estado Aprobado y Enviado",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2640, 100]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": { "__rl": true, "mode": "id", "value": "={{ $env.AIRTABLE_BASE_ID }}" },
+        "table": { "__rl": true, "mode": "name", "value": "Consultas" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": ["id"],
+          "value": {
+            "id": "={{ $('Guardar consulta · Procesado por IA').item.json.id }}",
+            "estado": "Rechazado por Humano"
+          }
+        },
+        "options": {}
+      },
+      "id": "n16",
+      "name": "Airtable · Estado Rechazado",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2420, 320]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": { "__rl": true, "mode": "name", "value": "#aprobaciones-socios" },
+        "text": "=Borrador rechazado. La consulta de {{ $('Armar contexto de memoria').item.json.empresa }} queda pendiente de respuesta manual (registro {{ $('Guardar consulta · Procesado por IA').item.json.id }}).",
+        "otherOptions": {}
+      },
+      "id": "n17",
+      "name": "Slack · Aviso rechazo al asesor",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [2640, 320]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": { "__rl": true, "mode": "id", "value": "={{ $env.AIRTABLE_BASE_ID }}" },
+        "table": { "__rl": true, "mode": "name", "value": "Ejecuciones" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "fecha": "={{ $now.toISO() }}",
+            "nodo": "Gmail · Enviar respuesta al socio",
+            "resultado": "error",
+            "detalle": "={{ $json.error ? $json.error.message : 'Fallo de envío Gmail' }}",
+            "consulta": "={{ [$('Guardar consulta · Procesado por IA').item.json.id] }}",
+            "workflow": "={{ $workflow.name }}",
+            "execution_id": "={{ $execution.id }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "n18",
+      "name": "Registrar error de envío",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2640, -100]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": { "__rl": true, "mode": "id", "value": "={{ $env.AIRTABLE_BASE_ID }}" },
+        "table": { "__rl": true, "mode": "name", "value": "Ejecuciones" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "fecha": "={{ $now.toISO() }}",
+            "nodo": "Flujo completo",
+            "resultado": "ok",
+            "detalle": "=Consulta respondida. Tokens clasificación: {{ $('IA · Clasificar consulta (gpt-4.1-nano)').item.json.usage ? $('IA · Clasificar consulta (gpt-4.1-nano)').item.json.usage.total_tokens : 's/d' }}",
+            "consulta": "={{ [$('Guardar consulta · Procesado por IA').item.json.id] }}",
+            "modelo": "gpt-4.1-nano + claude-haiku-4-5",
+            "workflow": "={{ $workflow.name }}",
+            "execution_id": "={{ $execution.id }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "n19",
+      "name": "Registrar ejecución OK",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2860, 100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true, \"mensaje\": \"Consulta recibida. Te respondemos por email a la brevedad.\" } }}",
+        "options": { "responseCode": 202 }
+      },
+      "id": "n20",
+      "name": "Responder 202 · consulta recibida",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [660, 60]
+    }
+  ],
+  "connections": {
+    "Trigger · Webhook formulario": { "main": [[ { "node": "Normalizar campos", "type": "main", "index": 0 } ]] },
+    "Normalizar campos": { "main": [[ { "node": "¿Datos completos y origen válido?", "type": "main", "index": 0 } ]] },
+    "¿Datos completos y origen válido?": { "main": [
+      [ { "node": "Responder 202 · consulta recibida", "type": "main", "index": 0 }, { "node": "Buscar empresa (memoria)", "type": "main", "index": 0 } ],
+      [ { "node": "Responder 400 · datos incompletos", "type": "main", "index": 0 } ]
+    ] },
+    "Responder 400 · datos incompletos": { "main": [[ { "node": "Registrar camino infeliz", "type": "main", "index": 0 } ]] },
+    "Buscar empresa (memoria)": { "main": [[ { "node": "Buscar consultas previas", "type": "main", "index": 0 } ]] },
+    "Buscar consultas previas": { "main": [[ { "node": "Armar contexto de memoria", "type": "main", "index": 0 } ]] },
+    "Armar contexto de memoria": { "main": [[ { "node": "IA · Clasificar consulta (gpt-4.1-nano)", "type": "main", "index": 0 } ]] },
+    "IA · Clasificar consulta (gpt-4.1-nano)": { "main": [[ { "node": "IA · Redactar respuesta (Claude Haiku 4.5)", "type": "main", "index": 0 } ]] },
+    "IA · Redactar respuesta (Claude Haiku 4.5)": { "main": [[ { "node": "Guardar consulta · Procesado por IA", "type": "main", "index": 0 } ]] },
+    "Guardar consulta · Procesado por IA": { "main": [[ { "node": "HITL · Slack: aprobar borrador", "type": "main", "index": 0 } ]] },
+    "HITL · Slack: aprobar borrador": { "main": [[ { "node": "¿Aprobado por humano?", "type": "main", "index": 0 } ]] },
+    "¿Aprobado por humano?": { "main": [
+      [ { "node": "Gmail · Enviar respuesta al socio", "type": "main", "index": 0 } ],
+      [ { "node": "Airtable · Estado Rechazado", "type": "main", "index": 0 } ]
+    ] },
+    "Gmail · Enviar respuesta al socio": { "main": [
+      [ { "node": "Airtable · Estado Aprobado y Enviado", "type": "main", "index": 0 } ],
+      [ { "node": "Registrar error de envío", "type": "main", "index": 0 } ]
+    ] },
+    "Airtable · Estado Aprobado y Enviado": { "main": [[ { "node": "Registrar ejecución OK", "type": "main", "index": 0 } ]] },
+    "Airtable · Estado Rechazado": { "main": [[ { "node": "Slack · Aviso rechazo al asesor", "type": "main", "index": 0 } ]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "REEMPLAZAR_POR_ID_DEL_ERROR_WORKFLOW",
+    "saveExecutionProgress": true,
+    "timezone": "America/Argentina/Cordoba"
+  },
+  "pinData": {},
+  "tags": [ { "name": "entrega-final" } ]
+}

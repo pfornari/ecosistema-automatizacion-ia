@@ -1,0 +1,56 @@
+{
+  "name": "Error workflow · registro y alerta",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "e01",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [0, 200]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": { "__rl": true, "mode": "id", "value": "={{ $env.AIRTABLE_BASE_ID }}" },
+        "table": { "__rl": true, "mode": "name", "value": "Ejecuciones" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "fecha": "={{ $now.toISO() }}",
+            "nodo": "={{ $json.execution.lastNodeExecuted }}",
+            "resultado": "error",
+            "detalle": "={{ ($json.execution.error && $json.execution.error.message) ? $json.execution.error.message.slice(0, 500) : 'Error sin mensaje' }}",
+            "workflow": "={{ $json.workflow.name }}",
+            "execution_id": "={{ $json.execution.id }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "e02",
+      "name": "Airtable · Registrar error",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [220, 200]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": { "__rl": true, "mode": "name", "value": "#alertas-automatizacion" },
+        "text": "=:rotating_light: Falló el workflow *{{ $('Error Trigger').item.json.workflow.name }}* en el nodo *{{ $('Error Trigger').item.json.execution.lastNodeExecuted }}*.\nMotivo: {{ $('Error Trigger').item.json.execution.error.message }}\nEjecución: {{ $('Error Trigger').item.json.execution.url }}",
+        "otherOptions": {}
+      },
+      "id": "e03",
+      "name": "Slack · Alerta al equipo",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [440, 200]
+    }
+  ],
+  "connections": {
+    "Error Trigger": { "main": [[ { "node": "Airtable · Registrar error", "type": "main", "index": 0 } ]] },
+    "Airtable · Registrar error": { "main": [[ { "node": "Slack · Alerta al equipo", "type": "main", "index": 0 } ]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

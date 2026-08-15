@@ -1,0 +1,172 @@
+{
+    "name": "PE3 - Clasificación de Leads",
+    "flow": [
+        {
+            "id": 1,
+            "module": "google-sheets:watchRows",
+            "version": 2,
+            "parameters": {
+                "__IMTCONN__": null,
+                "mode": "select",
+                "spreadsheetId": "",
+                "sheetId": "Leads",
+                "includesHeaders": true,
+                "tableFirstRow": "A1:D1",
+                "limit": 1,
+                "valueRenderOption": "FORMATTED_VALUE",
+                "dateTimeRenderOption": "FORMATTED_STRING"
+            },
+            "mapper": {},
+            "metadata": {
+                "designer": { "x": 0, "y": 0 },
+                "notes": "Trigger: cada fila nueva en la hoja Leads dispara el escenario. Columnas esperadas: nombre, empresa, consulta, presupuesto."
+            }
+        },
+        {
+            "id": 2,
+            "module": "openai-gpt-3:CreateCompletion",
+            "version": 1,
+            "parameters": { "__IMTCONN__": null },
+            "mapper": {
+                "select": "chat",
+                "model": "gpt-4o-mini",
+                "temperature": "0",
+                "top_p": "1",
+                "n_completions": "1",
+                "max_tokens": "10",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Sos un calificador de leads comerciales. Respondé únicamente con la palabra Alta o la palabra Baja, sin puntuación, sin comillas y sin texto adicional."
+                    },
+                    {
+                        "role": "user",
+                        "content": "Clasificá la prioridad de este lead. Nombre: {{1.nombre}}. Empresa: {{1.empresa}}. Consulta: {{1.consulta}}. Presupuesto declarado: {{1.presupuesto}}. Es Alta si el presupuesto supera 500000 o la consulta expresa urgencia o plazo inmediato. En el resto de los casos es Baja."
+                    }
+                ]
+            },
+            "onerror": [
+                {
+                    "id": 6,
+                    "module": "builtin:Break",
+                    "version": 1,
+                    "parameters": {
+                        "count": 3,
+                        "interval": 1,
+                        "retry": true
+                    },
+                    "mapper": {},
+                    "metadata": {
+                        "designer": { "x": 300, "y": 300 },
+                        "notes": "Error Handler en modo Break con 3 reintentos automáticos espaciados 1 minuto, para tolerar caídas temporales de la API de OpenAI."
+                    }
+                }
+            ],
+            "metadata": {
+                "designer": { "x": 300, "y": 0 },
+                "notes": "Calificación dinámica del lead. El prompt está mapeado con las variables del trigger, sin datos fijos."
+            }
+        },
+        {
+            "id": 3,
+            "module": "builtin:BasicRouter",
+            "version": 1,
+            "mapper": null,
+            "metadata": { "designer": { "x": 600, "y": 0 } },
+            "routes": [
+                {
+                    "flow": [
+                        {
+                            "id": 4,
+                            "module": "google-email:ActionSendEmail",
+                            "version": 2,
+                            "filter": {
+                                "name": "Prioridad Alta",
+                                "conditions": [
+                                    [
+                                        {
+                                            "a": "{{2.result}}",
+                                            "o": "text:equal:ci",
+                                            "b": "Alta"
+                                        }
+                                    ]
+                                ]
+                            },
+                            "parameters": { "__IMTCONN__": null },
+                            "mapper": {
+                                "to": [ "ventas@midominio.com" ],
+                                "subject": "Lead de prioridad Alta: {{1.empresa}}",
+                                "contentType": "text",
+                                "text": "Lead calificado como prioridad Alta por la IA. Nombre: {{1.nombre}}. Empresa: {{1.empresa}}. Consulta: {{1.consulta}}. Presupuesto: {{1.presupuesto}}. Contactar dentro de las próximas 24 horas."
+                            },
+                            "metadata": {
+                                "designer": { "x": 900, "y": -150 },
+                                "notes": "Rama Alta: aviso inmediato al equipo de ventas por email."
+                            }
+                        }
+                    ]
+                },
+                {
+                    "flow": [
+                        {
+                            "id": 5,
+                            "module": "google-sheets:addRow",
+                            "version": 2,
+                            "filter": {
+                                "name": "Prioridad Baja",
+                                "conditions": [
+                                    [
+                                        {
+                                            "a": "{{2.result}}",
+                                            "o": "text:equal:ci",
+                                            "b": "Baja"
+                                        }
+                                    ]
+                                ]
+                            },
+                            "parameters": { "__IMTCONN__": null },
+                            "mapper": {
+                                "mode": "select",
+                                "spreadsheetId": "",
+                                "sheetId": "Registro",
+                                "includesHeaders": true,
+                                "insertDataOption": "INSERT_ROWS",
+                                "valueInputOption": "USER_ENTERED",
+                                "values": {
+                                    "0": "{{1.nombre}}",
+                                    "1": "{{1.empresa}}",
+                                    "2": "{{1.consulta}}",
+                                    "3": "{{1.presupuesto}}",
+                                    "4": "{{2.result}}"
+                                }
+                            },
+                            "metadata": {
+                                "designer": { "x": 900, "y": 150 },
+                                "notes": "Rama Baja: registro del lead en la hoja de seguimiento para nutrición posterior."
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "metadata": {
+        "instant": false,
+        "version": 1,
+        "scenario": {
+            "roundtrips": 1,
+            "maxErrors": 3,
+            "autoCommit": true,
+            "autoCommitTriggerLast": true,
+            "sequential": false,
+            "slots": null,
+            "confidential": false,
+            "dataloss": false,
+            "dlq": false,
+            "freshVariables": false
+        },
+        "designer": { "orphans": [] },
+        "zone": "eu2.make.com",
+        "notes": []
+    }
+}
